@@ -1,5 +1,5 @@
 """
-Nano Banana 2 JSON Prompt Converter — Streamlit UI
+Nano Banana 2 / GPT Image 2 JSON Prompt Converter — Streamlit UI
 Run: streamlit run app.py
 """
 
@@ -49,23 +49,81 @@ def slugify(text: str) -> str:
     text = re.sub(r"[\s_-]+", "-", text)
     return text[:50].strip("-")
 
-def save_prompt(folder: str, json_str: str, objective: str):
+def save_prompt(folder: str, content: str, objective: str, ext: str = "json"):
     folder_path = SAVE_BASE / folder
     folder_path.mkdir(exist_ok=True)
     slug = slugify(objective) or "prompt"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    filename = f"{slug}-{timestamp}.json"
-    (folder_path / filename).write_text(json_str)
+    filename = f"{slug}-{timestamp}.{ext}"
+    (folder_path / filename).write_text(content)
     return filename
 
 def get_saved_prompts():
     result = {}
     for folder in sorted(SAVE_BASE.iterdir()):
         if folder.is_dir():
-            files = sorted(folder.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+            files = sorted(
+                [f for f in folder.iterdir() if f.suffix in {".json", ".txt"}],
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
             if files:
                 result[folder.name] = files
     return result
+
+def to_gpt_image_2(result: dict) -> str:
+    subject = result["subject"]
+    lighting = result["lighting"]
+    camera = result["camera"]
+    style = result["style"]
+    env = result["environment"]
+    comp = result["composition"]
+    settings = result["settings"]
+    negatives = result["negative_constraints"]
+
+    # Scene
+    context_parts = [p for p in [env.get("location", ""), env.get("time_of_day", ""), env.get("weather", "")] if p]
+    scene = f"A {style['aesthetic']} image."
+    if context_parts:
+        scene += f" Set in {', '.join(context_parts)}."
+
+    # Subject
+    sub_parts = [subject["description"]]
+    if subject.get("appearance"):
+        sub_parts.append(subject["appearance"])
+    if subject.get("expression") and subject["expression"] != "natural":
+        sub_parts.append(f"{subject['expression']} expression")
+    if subject.get("clothing"):
+        sub_parts.append(f"Wearing {subject['clothing']}")
+    subject_text = ". ".join(p.strip().rstrip(".") for p in sub_parts if p.strip())
+
+    # Detail
+    detail = (
+        f"Framing: {comp['framing']}, {comp['depth']} depth of field. "
+        f"Shot on {camera['lens']} lens at {camera['aperture']}, {camera.get('height', 'eye-level')} height. "
+        f"Color grade: {style['color_grade']}."
+    )
+
+    # Lighting
+    light_desc = (
+        f"{lighting['type'].title()} from {lighting['direction']}. "
+        f"Color temperature {lighting['color_temperature']}, "
+        f"intensity {int(lighting['intensity'] * 100)}%."
+    )
+
+    # Constraint
+    constraint = (
+        f"Avoid: {', '.join(negatives)}. "
+        f"Aspect ratio {settings['aspect_ratio']}, resolution {settings['resolution']}."
+    )
+
+    return (
+        f"Scene: {scene}\n\n"
+        f"Subject: {subject_text}.\n\n"
+        f"Detail: {detail}\n\n"
+        f"Lighting: {light_desc}\n\n"
+        f"Constraint: {constraint}"
+    )
 
 # ---------------------------------------------------------------------------
 # Global CSS
@@ -306,9 +364,9 @@ st.markdown('<p class="nb-wordmark">NB2.</p>', unsafe_allow_html=True)
 st.markdown("""
 <div style="margin-top: 24px; margin-bottom: 32px;">
     <p class="nb-hero-label">Structured image prompts</p>
-    <h1 class="nb-hero-title">Turn any idea into a<br><span>JSON prompt.</span></h1>
+    <h1 class="nb-hero-title">Turn any idea into a<br><span>structured prompt.</span></h1>
     <p class="nb-hero-sub">
-        Paste a plain description. Get a structured Nano Banana 2 prompt back instantly.<br>
+        Paste a plain description. Get a structured prompt for Nano Banana 2 or GPT Image 2.<br>
         No tokens. No API calls. Pure keyword matching.
     </p>
 </div>
@@ -326,7 +384,7 @@ prompt = st.text_area(
     key=f"prompt_{st.session_state.input_key}",
 )
 
-col_btn, col_clear, col_hint = st.columns([1, 1, 3])
+col_btn, col_clear, col_model, col_hint = st.columns([1, 1, 1.5, 1.5])
 with col_btn:
     convert_btn = st.button("Convert →", type="primary", use_container_width=True)
 with col_clear:
@@ -336,6 +394,12 @@ with col_clear:
         st.session_state.last_json_str = ""
         st.session_state.save_status = ""
         st.rerun()
+with col_model:
+    model_choice = st.selectbox(
+        "Model",
+        options=["Nano Banana 2", "GPT Image 2"],
+        label_visibility="collapsed",
+    )
 with col_hint:
     st.caption("Try: `portrait`, `golden hour`, `cinematic`, `close-up`, `moody`")
 
@@ -358,6 +422,20 @@ if st.session_state.last_result:
     result = st.session_state.last_result
     json_str = st.session_state.last_json_str
 
+    # Compute display content based on selected model
+    if model_choice == "GPT Image 2":
+        display_str = to_gpt_image_2(result)
+        code_lang = "text"
+        file_ext = "txt"
+        download_name = "gpt_image_2_prompt.txt"
+        download_mime = "text/plain"
+    else:
+        display_str = json_str
+        code_lang = "json"
+        file_ext = "json"
+        download_name = "nb2_prompt.json"
+        download_mime = "application/json"
+
     st.markdown('<hr class="nb-divider">', unsafe_allow_html=True)
 
     # Metric row
@@ -369,22 +447,7 @@ if st.session_state.last_result:
 
     st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-    # JSON output
-    st.code(json_str, language="json")
-
-    # Download
-    col_dl, col_space = st.columns([1, 3])
-    with col_dl:
-        st.download_button(
-            label="Download JSON",
-            data=json_str,
-            file_name="nb2_prompt.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-
-    # ── Save section ────────────────────────────────────────
-    st.markdown('<hr class="nb-divider">', unsafe_allow_html=True)
+    # ── Save section (before the prompt code) ───────────────
     st.markdown('<p class="save-card-label">Save Prompt</p>', unsafe_allow_html=True)
 
     folders = get_folders()
@@ -421,8 +484,9 @@ if st.session_state.last_result:
         else:
             filename = save_prompt(
                 target_folder,
-                json_str,
+                display_str,
                 result.get("Objective", "prompt"),
+                ext=file_ext,
             )
             st.session_state.save_status = f"Saved to {target_folder}/{filename}"
             st.rerun()
@@ -431,6 +495,22 @@ if st.session_state.last_result:
         st.markdown(
             f"<p style='color:#C6FF00;font-size:12px;margin-top:8px'>{st.session_state.save_status}</p>",
             unsafe_allow_html=True,
+        )
+
+    st.markdown('<hr class="nb-divider">', unsafe_allow_html=True)
+
+    # JSON / text output
+    st.code(display_str, language=code_lang)
+
+    # Download
+    col_dl, col_space = st.columns([1, 3])
+    with col_dl:
+        st.download_button(
+            label="Download",
+            data=display_str,
+            file_name=download_name,
+            mime=download_mime,
+            use_container_width=True,
         )
 
     # Breakdown
@@ -466,7 +546,6 @@ with st.sidebar:
         for folder_name, files in saved.items():
             with st.expander(f"{folder_name}  ({len(files)})"):
                 for f in files:
-                    # Clean display name: strip timestamp suffix
                     display = re.sub(r"-\d{8}-\d{6}$", "", f.stem).replace("-", " ").title()
                     col_name, col_del = st.columns([4, 1])
                     with col_name:
